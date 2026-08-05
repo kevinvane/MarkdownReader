@@ -22,10 +22,13 @@ const md = window.markdownit({
   }
 });
 
-function renderMarkdown(content, filePath) {
+async function renderMarkdown(content, filePath) {
   let html = md.render(content || '');
   html = html.replace(/<li>\[ \]\s*/g, '<li><input type="checkbox" disabled>');
   html = html.replace(/<li>\[x\]\s*/gi, '<li><input type="checkbox" disabled checked>');
+  if (filePath && window.electronAPI.resolveImageSrcs) {
+    html = await window.electronAPI.resolveImageSrcs(html, filePath);
+  }
   currentHtml = html;
   currentFilePath = filePath || null;
   const contentEl = $('content');

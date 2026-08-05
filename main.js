@@ -180,6 +180,10 @@ ipcMain.handle('open-file-dialog', (_event) => {
   return openFileDialog(win);
 });
 
+ipcMain.handle('resolve-image-srcs', (_event, { html, filePath }) => {
+  return resolveImageSrcs(html || '', filePath);
+});
+
 ipcMain.on('set-export-enabled', (_event, enabled) => {
   const item = Menu.getApplicationMenu()?.getMenuItemById('export-pdf');
   if (item) item.enabled = Boolean(enabled);

@@ -2,6 +2,8 @@
 
 轻量级桌面 Markdown 阅读器，基于 Electron 构建。采用 GitHub 主题渲染风格。
 
+![](./assets/icon.ico)
+
 ## 快速开始
 
 ```bash
