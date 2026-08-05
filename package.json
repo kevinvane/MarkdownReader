@@ -22,6 +22,7 @@
       "main.js",
       "preload.js",
       "index.html",
+      "print.html",
       "renderer.js",
       "custom.css",
       "assets/icon.svg",

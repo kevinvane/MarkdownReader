@@ -1,5 +1,8 @@
 const $ = document.getElementById.bind(document);
 
+let currentHtml = '';
+let currentFilePath = null;
+
 const md = window.markdownit({
   html: false,
   linkify: true,
@@ -23,15 +26,18 @@ function renderMarkdown(content, filePath) {
   let html = md.render(content || '');
   html = html.replace(/<li>\[ \]\s*/g, '<li><input type="checkbox" disabled>');
   html = html.replace(/<li>\[x\]\s*/gi, '<li><input type="checkbox" disabled checked>');
+  currentHtml = html;
+  currentFilePath = filePath || null;
   const contentEl = $('content');
   if (!content || !content.trim()) {
     contentEl.innerHTML = '<p style="color: #6a737d; text-align: center; margin-top: 80px;">文件内容为空</p>';
   } else {
     contentEl.innerHTML = html;
   }
+  window.electronAPI.setExportEnabled(Boolean(content && content.trim()));
   if (filePath) {
     const parts = filePath.replace(/\\/g, '/').split('/');
-    document.title = parts[parts.length - 1] + ' - MarkdownReader';
+    document.title = parts[parts.length - 1] + ' - MD-Reader';
   }
 }
 
@@ -99,4 +105,18 @@ window.electronAPI.onSetTheme((theme) => {
   document.body.classList.toggle('dark-mode', theme === 'dark');
   document.body.classList.toggle('light-mode', theme === 'light');
   setHighlightTheme(theme);
+});
+
+window.electronAPI.onExportPdfRequest(async () => {
+  if (!currentHtml) {
+    alert('请先打开 Markdown 文件');
+    return;
+  }
+  const result = await window.electronAPI.exportPdf(currentHtml, currentFilePath || '');
+  if (result.canceled) return;
+  if (result.ok) {
+    alert('导出成功：' + result.filePath);
+  } else {
+    alert('导出失败：' + (result.error || '未知错误'));
+  }
 });

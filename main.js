@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 
 const VALID_EXTENSIONS = ['.md', '.markdown'];
 
@@ -40,6 +41,16 @@ function buildMenu(win) {
             } catch (err) {
               console.error('Failed to read file:', err.message);
             }
+          },
+        },
+        { type: 'separator' },
+        {
+          label: '导出为 PDF…',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          id: 'export-pdf',
+          enabled: false,
+          click: () => {
+            win.webContents.send('export-pdf-request');
           },
         },
         { type: 'separator' },
@@ -106,6 +117,19 @@ function createWindow() {
 
   buildMenu(win);
   win.loadFile('index.html');
+
+  win.webContents.on('before-input-event', (event, input) => {
+    if (
+      input.type === 'keyDown' &&
+      (input.control || input.meta) &&
+      input.shift &&
+      input.key &&
+      input.key.toLowerCase() === 's'
+    ) {
+      event.preventDefault();
+      win.webContents.send('export-pdf-request');
+    }
+  });
 }
 
 app.setAsDefaultProtocolClient('markdown-reader');
@@ -126,8 +150,8 @@ app.on('window-all-closed', () => {
   }
 });
 
-ipcMain.handle('open-file-dialog', async () => {
-  const result = await dialog.showOpenDialog({
+async function openFileDialog(win) {
+  const result = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
     filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
   });
@@ -148,5 +172,89 @@ ipcMain.handle('open-file-dialog', async () => {
   } catch (err) {
     console.error(`Failed to read file: ${filePath}`, err.message);
     return null;
+  }
+}
+
+ipcMain.handle('open-file-dialog', (_event) => {
+  const win = BrowserWindow.getFocusedWindow();
+  return openFileDialog(win);
+});
+
+ipcMain.on('set-export-enabled', (_event, enabled) => {
+  const item = Menu.getApplicationMenu()?.getMenuItemById('export-pdf');
+  if (item) item.enabled = Boolean(enabled);
+});
+
+function resolveImageSrcs(html, filePath) {
+  if (!filePath || !path.isAbsolute(filePath)) return html;
+  const dir = path.dirname(filePath);
+  return html.replace(/<img([^>]*?)\ssrc="([^"]*)"/gi, (match, attrs, src) => {
+    if (/^(data:|https?:|file:|blob:)/i.test(src)) return match;
+    try {
+      return `<img${attrs} src="${pathToFileURL(path.resolve(dir, src)).href}"`;
+    } catch (err) {
+      return match;
+    }
+  });
+}
+
+const WAIT_IMAGES_SCRIPT = `new Promise((resolve) => {
+  const imgs = Array.from(document.querySelectorAll('#print-content img'));
+  if (imgs.length === 0) { resolve(true); return; }
+  let pending = imgs.length;
+  let settled = false;
+  const finish = () => { if (!settled) { settled = true; resolve(true); } };
+  const oneLess = () => { pending--; if (pending <= 0) finish(); };
+  imgs.forEach((img) => {
+    if (img.complete) { oneLess(); }
+    else { img.addEventListener('load', oneLess, { once: true }); img.addEventListener('error', oneLess, { once: true }); }
+  });
+  setTimeout(finish, 10000);
+});`;
+
+ipcMain.handle('export-pdf', async (event, { html, filePath }) => {
+  const mainWin = BrowserWindow.fromWebContents(event.sender);
+  const hiddenWin = new BrowserWindow({
+    width: 794,
+    height: 1123,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  try {
+    await hiddenWin.loadFile('print.html');
+    const finalHtml = resolveImageSrcs(html || '', filePath);
+    await hiddenWin.webContents.executeJavaScript(
+      `document.getElementById('print-content').innerHTML = ${JSON.stringify(finalHtml)};`
+    );
+    await hiddenWin.webContents.executeJavaScript(WAIT_IMAGES_SCRIPT);
+
+    const data = await hiddenWin.webContents.printToPDF({
+      printBackground: false,
+      pageSize: 'A4',
+      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
+    });
+
+    const baseName = filePath && path.basename(filePath)
+      ? path.basename(filePath, path.extname(filePath))
+      : '未命名';
+    const saveResult = await dialog.showSaveDialog(mainWin, {
+      title: '导出为 PDF',
+      defaultPath: `${baseName}.pdf`,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (saveResult.canceled || !saveResult.filePath) {
+      return { ok: false, canceled: true };
+    }
+
+    await fs.promises.writeFile(saveResult.filePath, data);
+    return { ok: true, filePath: saveResult.filePath };
+  } catch (err) {
+    console.error('导出 PDF 失败:', err);
+    return { ok: false, error: err.message || String(err) };
+  } finally {
+    if (!hiddenWin.isDestroyed()) hiddenWin.destroy();
   }
 });
