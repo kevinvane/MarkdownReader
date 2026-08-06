@@ -10,6 +10,10 @@ let searchActiveIndex = -1;    // 结果列表中当前选中下标
 let searchRegex = null;        // 当前已编译的 RegExp
 let searchDebounceId = null;
 let sourceLineMap = [];        // 顶层 DOM 块索引 → 对应源码起始行号
+let outlineItems = [];         // [{ level, title, el }]
+let activeOutlineIndex = -1;   // 当前高亮条目下标
+let outlineCollapsed = false;  // 折叠状态（localStorage 持久化）
+const OUTLINE_STORAGE_KEY = 'md-reader.outline.collapsed';
 
 const md = window.markdownit({
   html: false,
@@ -33,6 +37,7 @@ const md = window.markdownit({
 async function renderMarkdown(content, filePath) {
   rawMarkdown = content || '';
   clearSearchState();
+  clearOutlineState();
   buildLineMap(rawMarkdown);
   let html = md.render(content || '');
   html = html.replace(/<li>\[ \]\s*/g, '<li><input type="checkbox" disabled>');
@@ -48,6 +53,7 @@ async function renderMarkdown(content, filePath) {
   } else {
     contentEl.innerHTML = html;
   }
+  buildOutline();
   window.electronAPI.setExportEnabled(Boolean(content && content.trim()));
   if (filePath) {
     const parts = filePath.replace(/\\/g, '/').split('/');
@@ -112,6 +118,7 @@ function setHighlightTheme(theme) {
 }
 
 if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  document.body.classList.add('dark-mode');
   setHighlightTheme('dark');
 }
 
@@ -416,3 +423,126 @@ function jumpToLine(lineNo) {
 }
 
 initSearchPanel();
+
+// ============ 大纲侧边栏（纯渲染进程内存操作，无新增 IPC） ============
+
+function clearOutlineState() {
+  activeOutlineIndex = -1;
+  outlineItems = [];
+  document.body.classList.remove('outline-open');
+}
+
+function syncOutlineLayout() {
+  const panelVisible = !outlineCollapsed;
+  $('outline-panel').hidden = !panelVisible;
+  $('outline-toggle-collapsed').hidden = panelVisible;
+  document.body.classList.toggle('outline-open', panelVisible);
+  $('search-panel').classList.toggle('outer-panel-shifted', panelVisible);
+}
+
+function buildOutline() {
+  const contentEl = $('content');
+  outlineItems = [];
+
+  const headers = contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6');
+  if (!headers.length) {
+    activeOutlineIndex = -1;
+    $('outline-body').innerHTML = '<p class="outline-empty">该文档暂未检测到标题</p>';
+    syncOutlineLayout();
+    return;
+  }
+
+  outlineItems = Array.prototype.map.call(headers, function (h) {
+    const level = Number(h.tagName.charAt(1));
+    const title = h.textContent.replace(/\s+/g, ' ').trim();
+    return { level: level, title: title, el: h };
+  });
+  activeOutlineIndex = -1;
+
+  renderOutlineList();
+  focusOutlineItem(0, false);
+  syncOutlineLayout();
+}
+
+function renderOutlineList() {
+  const bodyEl = $('outline-body');
+  const ul = document.createElement('ul');
+  const icons = { 1: '●', 2: '○', 3: '▪', n: '·' };
+  outlineItems.forEach(function (item, idx) {
+    const li = document.createElement('li');
+    const levelClass = item.level <= 3 ? 'level-' + item.level : 'level-n';
+    li.className = levelClass;
+    const icon = document.createElement('span');
+    icon.className = 'outline-icon';
+    icon.textContent = item.level <= 3 ? icons[item.level] : icons.n;
+    li.appendChild(icon);
+    li.appendChild(document.createTextNode(item.title));
+    li.addEventListener('click', function () {
+      focusOutlineItem(idx, true);
+    });
+    ul.appendChild(li);
+  });
+  bodyEl.innerHTML = '';
+  bodyEl.appendChild(ul);
+}
+
+function focusOutlineItem(index, shouldScroll) {
+  if (index < 0 || index >= outlineItems.length) return;
+  activeOutlineIndex = index;
+  const listEl = $('outline-body').querySelector('ul');
+  const items = listEl ? listEl.querySelectorAll('li') : [];
+  Array.prototype.forEach.call(items, function (el, i) {
+    el.classList.toggle('outline-active', i === index);
+  });
+  if (shouldScroll !== false) {
+    outlineItems[index].el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function updateActiveOutlineFromScroll() {
+  let bestIndex = -1;
+  for (let i = 0; i < outlineItems.length; i++) {
+    const rect = outlineItems[i].el.getBoundingClientRect();
+    if (rect.top <= 60) { bestIndex = i; } else { break; }
+  }
+  if (bestIndex !== activeOutlineIndex && bestIndex >= 0) {
+    focusOutlineItem(bestIndex, false);
+  }
+}
+
+function bindOutlineScrollListener() {
+  const target = document.scrollingElement || window;
+  target.addEventListener('scroll', function () {
+    if (outlineItems.length && !$('outline-panel').hidden) {
+      window.requestAnimationFrame(updateActiveOutlineFromScroll);
+    }
+  }, { passive: true });
+}
+
+function collapseOutline() {
+  outlineCollapsed = true;
+  localStorage.setItem(OUTLINE_STORAGE_KEY, '1');
+  syncOutlineLayout();
+}
+
+function expandOutline() {
+  outlineCollapsed = false;
+  localStorage.setItem(OUTLINE_STORAGE_KEY, '0');
+  syncOutlineLayout();
+}
+
+function readOutlineStorage() {
+  try {
+    return localStorage.getItem(OUTLINE_STORAGE_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function initOutlinePanel() {
+  outlineCollapsed = readOutlineStorage();
+  $('outline-collapse-btn').addEventListener('click', collapseOutline);
+  $('outline-toggle-collapsed').addEventListener('click', expandOutline);
+  bindOutlineScrollListener();
+}
+initOutlinePanel();

@@ -15,6 +15,18 @@
     <p style="color: #6a737d; text-align: center; margin-top: 80px;">拖拽 .md 文件到窗口，或通过菜单 File > 打开文件 打开</p>
   </div>
 
+  <aside id="outline-panel" class="outline-panel" hidden>
+    <div class="outline-header">
+      <span class="outline-title">大纲</span>
+      <button id="outline-collapse-btn" class="outline-collapse-btn" type="button" title="折叠大纲" aria-label="折叠大纲">×</button>
+    </div>
+    <div id="outline-body" class="outline-body">
+      <p class="outline-empty">该文档暂未检测到标题</p>
+    </div>
+  </aside>
+
+  <button id="outline-toggle-collapsed" class="outline-restore-btn" hidden>大纲</button>
+
   <div id="search-panel" class="search-panel" hidden>
     <div class="search-bar">
       <input id="search-input" type="text" placeholder="输入关键词开始搜索" autocomplete="off" spellcheck="false">
