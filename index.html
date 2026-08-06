@@ -14,6 +14,18 @@
   <div id="content" class="markdown-body">
     <p style="color: #6a737d; text-align: center; margin-top: 80px;">拖拽 .md 文件到窗口，或通过菜单 File > 打开文件 打开</p>
   </div>
+
+  <div id="search-panel" class="search-panel" hidden>
+    <div class="search-bar">
+      <input id="search-input" type="text" placeholder="输入关键词开始搜索" autocomplete="off" spellcheck="false">
+      <button id="search-btn-case" class="search-toggle" type="button" title="大小写敏感 (当前: 关)" aria-pressed="false">Aa</button>
+      <button id="search-btn-regex" class="search-toggle" type="button" title="正则表达式 (当前: 关)" aria-pressed="false">.*</button>
+      <span id="search-count" class="search-count"></span>
+    </div>
+    <ul id="search-results" class="search-results"></ul>
+    <div id="search-hint" class="search-hint"></div>
+  </div>
+
   <script src="lib/markdown-it.min.js"></script>
   <script src="lib/highlight.min.js"></script>
   <script src="renderer.js"></script>
