@@ -13,8 +13,14 @@ let sourceLineMap = [];        // 顶层 DOM 块索引 → 对应源码起始行
 let mermaidSeq = 0;            // mermaid 渲染块自增 id
 let mermaidBlocks = [];        // [{ el, source, status }] 当前文档中的 mermaid 块
 let mermaidRenderToken = 0;    // 渲染令牌：打开新文件时作废旧渲染任务
+let mermaidObserver = null;    // 视口懒加载观察器
+const mermaidRenderCache = new Map(); // 渲染缓存：theme+source → { id, svg }
+const MERMAID_CACHE_MAX = 40;
 let lightboxBlock = null;      // 灯箱当前对应的 mermaid 块
 let lightboxScale = 1;         // 灯箱当前缩放倍率
+let lightboxPanning = false;   // 灯箱拖拽平移状态
+let lightboxPanStart = { x: 0, y: 0, sl: 0, st: 0 };
+let lightboxPanMoved = false;  // 本次按下是否发生过拖拽（区分点击关闭）
 let outlineItems = [];         // [{ level, title, el }]
 let activeOutlineIndex = -1;   // 当前高亮条目下标
 let outlineCollapsed = false;  // 折叠状态（localStorage 持久化）
@@ -588,7 +594,35 @@ function collectMermaidBlocks() {
       status: 'pending'
     });
   });
-  scheduleMermaidRenders();
+  observeMermaidBlocks();
+}
+
+function observeMermaidBlocks() {
+  if (mermaidObserver) {
+    mermaidObserver.disconnect();
+    mermaidObserver = null;
+  }
+  if (typeof IntersectionObserver !== 'function') {
+    scheduleMermaidRenders();
+    return;
+  }
+  mermaidObserver = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      const el = entry.target;
+      mermaidObserver.unobserve(el);
+      const b = findMermaidBlock(el);
+      if (b && b.status === 'pending') renderOneMermaid(b);
+    });
+  }, { root: null, rootMargin: '1500px 0px 1500px 0px', threshold: 0 });
+  mermaidBlocks.forEach(function (b) { mermaidObserver.observe(b.el); });
+}
+
+function findMermaidBlock(el) {
+  for (let i = 0; i < mermaidBlocks.length; i++) {
+    if (mermaidBlocks[i].el === el) return mermaidBlocks[i];
+  }
+  return null;
 }
 
 function scheduleMermaidRenders() {
@@ -614,36 +648,115 @@ function getMermaidTheme() {
   return document.body.classList.contains('dark-mode') ? 'dark' : 'default';
 }
 
+function cacheMermaid(key, entry) {
+  if (mermaidRenderCache.has(key)) mermaidRenderCache.delete(key);
+  mermaidRenderCache.set(key, entry);
+  if (mermaidRenderCache.size > MERMAID_CACHE_MAX) {
+    mermaidRenderCache.delete(mermaidRenderCache.keys().next().value);
+  }
+}
+
+function buildMermaidErrorBox(b, err) {
+  const message = (err && (err.str || err.message)) || String(err);
+  const lineMatch = /on line\s+(\d+)/i.exec(message);
+  const errLine = lineMatch ? parseInt(lineMatch[1], 10) : null;
+  let html =
+    '<div class="mermaid-error-box">' +
+    '<div class="mermaid-error-head">' +
+    '<span class="mermaid-error-title">Mermaid 渲染失败</span>' +
+    '<button type="button" class="mermaid-tool-btn mermaid-error-copy" title="复制源码">复制源码</button>' +
+    '</div>';
+  if (errLine) html += '<div class="mermaid-error-loc">错误位于第 ' + errLine + ' 行</div>';
+  html +=
+    '<pre class="mermaid-error-msg">' + escapeHtmlForSearch(message) + '</pre>' +
+    '<pre class="mermaid-error-source">' + buildSourceWithErrorLine(b.source, errLine) + '</pre>' +
+    '</div>';
+  return html;
+}
+
+function buildSourceWithErrorLine(source, errLine) {
+  if (!errLine) return escapeHtmlForSearch(source);
+  const lines = source.split('\n');
+  const idx = errLine - 1;
+  if (idx < 0 || idx >= lines.length) return escapeHtmlForSearch(source);
+  return lines.map(function (ln, i) {
+    const esc = escapeHtmlForSearch(ln);
+    return i === idx ? '<span class="mermaid-error-line">' + esc + '</span>' : esc;
+  }).join('\n');
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.left = '0';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch (e) {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
 async function renderOneMermaid(b) {
   if (b.status !== 'pending') return;
   const svgHost = b.el.querySelector('.mermaid-svg');
   if (!svgHost) return;
-  try {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: getMermaidTheme(),
-      securityLevel: 'strict',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
-    });
-    await mermaid.parse(b.source);
-    const result = await mermaid.render(b.el.getAttribute('data-mermaid-id'), b.source);
-    svgHost.innerHTML = result.svg;
-    svgHost.classList.remove('mermaid-pending');
-    svgHost.classList.add('mermaid-rendered');
-    b.status = 'rendered';
-    attachMermaidToolbar(b);
-  } catch (err) {
-    svgHost.classList.remove('mermaid-pending');
-    svgHost.classList.add('mermaid-error');
-    b.status = 'error';
-    const msg = (err && (err.str || err.message)) || String(err);
-    svgHost.innerHTML =
-      '<div class="mermaid-error-box">' +
-      '<div class="mermaid-error-title">Mermaid 渲染失败</div>' +
-      '<div class="mermaid-error-msg">' + escapeHtmlForSearch(msg) + '</div>' +
-      '<pre class="mermaid-error-source">' + escapeHtmlForSearch(b.source) + '</pre>' +
-      '</div>';
+  const theme = getMermaidTheme();
+  const cacheKey = theme + '\u0000' + b.source;
+  const targetId = b.el.getAttribute('data-mermaid-id');
+  let svg = null;
+  const cached = mermaidRenderCache.get(cacheKey);
+  if (cached) {
+    svg = cached.id === targetId ? cached.svg : cached.svg.split(cached.id).join(targetId);
+  } else {
+    try {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: theme,
+        securityLevel: 'strict',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
+      });
+      await mermaid.parse(b.source);
+      const result = await mermaid.render(targetId, b.source);
+      svg = result.svg;
+      cacheMermaid(cacheKey, { id: targetId, svg: svg });
+    } catch (err) {
+      svgHost.classList.remove('mermaid-pending');
+      svgHost.classList.add('mermaid-error');
+      b.status = 'error';
+      svgHost.innerHTML = buildMermaidErrorBox(b, err);
+      const copyBtn = svgHost.querySelector('.mermaid-error-copy');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', function () {
+          const old = copyBtn.textContent;
+          copyTextToClipboard(b.source).then(function (ok) {
+            copyBtn.textContent = ok ? '已复制' : '复制失败';
+            setTimeout(function () { copyBtn.textContent = old; }, 1200);
+          });
+        });
+      }
+      return;
+    }
   }
+  svgHost.innerHTML = svg;
+  svgHost.classList.remove('mermaid-pending');
+  svgHost.classList.add('mermaid-rendered');
+  b.status = 'rendered';
+  attachMermaidToolbar(b);
 }
 
 function attachMermaidToolbar(b) {
@@ -703,17 +816,50 @@ function openChartLightbox(b) {
   const svgEl = svgHost ? svgHost.querySelector('svg') : null;
   if (!svgEl) return;
   lightboxBlock = b;
-  lightboxScale = 1;
   const stage = $('chart-lightbox-stage');
   stage.innerHTML = '';
   const clone = svgEl.cloneNode(true);
   clone.removeAttribute('style');
   stage.appendChild(clone);
-  stage.scrollTop = 0;
-  stage.scrollLeft = 0;
-  updateLightboxZoom();
   $('chart-lightbox').hidden = false;
   document.body.classList.add('chart-lightbox-open');
+  stage.scrollTop = 0;
+  stage.scrollLeft = 0;
+  lightboxScale = 1;
+  fitLightboxToScreen();
+}
+
+function getSvgNaturalSize(svgEl) {
+  let w = 0;
+  let h = 0;
+  const wa = svgEl.getAttribute('width');
+  const ha = svgEl.getAttribute('height');
+  if (wa && !/%/.test(wa)) {
+    const n = parseFloat(wa);
+    if (isFinite(n) && n > 0) w = n;
+  }
+  if (ha && !/%/.test(ha)) {
+    const n = parseFloat(ha);
+    if (isFinite(n) && n > 0) h = n;
+  }
+  const vb = svgEl.viewBox && svgEl.viewBox.baseVal;
+  if (!w && vb && vb.width > 0) w = vb.width;
+  if (!h && vb && vb.height > 0) h = vb.height;
+  return { w: w, h: h };
+}
+
+function fitLightboxToScreen() {
+  const stage = $('chart-lightbox-stage');
+  const svgEl = stage.querySelector('svg');
+  if (!svgEl) return;
+  const size = getSvgNaturalSize(svgEl);
+  if (!size.w || !size.h) return;
+  const pad = 48;
+  const availW = Math.max(stage.clientWidth - pad, 100);
+  const availH = Math.max(stage.clientHeight - pad, 100);
+  const scale = Math.min(availW / size.w, availH / size.h);
+  lightboxScale = Math.max(0.1, Math.min(1, Math.round(scale * 100) / 100));
+  updateLightboxZoom();
 }
 
 function updateLightboxZoom() {
@@ -731,6 +877,8 @@ function closeChartLightbox() {
   document.body.classList.remove('chart-lightbox-open');
   lightboxBlock = null;
   lightboxScale = 1;
+  lightboxPanning = false;
+  lightboxPanMoved = false;
 }
 
 // ============ 图表导出（SVG / PNG） ============
@@ -778,15 +926,9 @@ function svgToPngDataUrl(svgEl, scale) {
   return new Promise(function (resolve, reject) {
     const clone = svgEl.cloneNode(true);
     clone.removeAttribute('style');
-    let width = parseInt(clone.getAttribute('width'), 10) || 0;
-    let height = parseInt(clone.getAttribute('height'), 10) || 0;
-    if (!width || !height) {
-      const vb = clone.getAttribute('viewBox');
-      if (vb) {
-        const parts = vb.split(/[\s,]+/).map(Number);
-        if (parts.length >= 4) { width = parts[2]; height = parts[3]; }
-      }
-    }
+    const size = getSvgNaturalSize(clone);
+    const width = size.w;
+    const height = size.h;
     if (!width || !height) {
       reject(new Error('无法确定图表尺寸'));
       return;
@@ -821,11 +963,11 @@ function initMermaidModule() {
 
   $('chart-lightbox-close').addEventListener('click', closeChartLightbox);
   $('chart-zoom-in').addEventListener('click', function () {
-    lightboxScale = Math.min(5, lightboxScale + 0.1);
+    lightboxScale = Math.min(5, lightboxScale * 1.25);
     updateLightboxZoom();
   });
   $('chart-zoom-out').addEventListener('click', function () {
-    lightboxScale = Math.max(0.2, lightboxScale - 0.1);
+    lightboxScale = Math.max(0.05, lightboxScale / 1.25);
     updateLightboxZoom();
   });
   $('chart-zoom-reset').addEventListener('click', function () {
@@ -841,12 +983,41 @@ function initMermaidModule() {
   stage.addEventListener('wheel', function (e) {
     if (lb.hidden) return;
     e.preventDefault();
-    const delta = e.deltaY < 0 ? 0.1 : -0.1;
-    lightboxScale = Math.min(5, Math.max(0.2, lightboxScale + delta));
+    lightboxScale = Math.min(5, Math.max(0.05, lightboxScale * (e.deltaY < 0 ? 1.1 : 0.9)));
     updateLightboxZoom();
   }, { passive: false });
+  stage.addEventListener('pointerdown', function (e) {
+    if (lb.hidden) return;
+    lightboxPanning = true;
+    lightboxPanMoved = false;
+    lightboxPanStart = { x: e.clientX, y: e.clientY, sl: stage.scrollLeft, st: stage.scrollTop };
+    stage.setPointerCapture(e.pointerId);
+    stage.classList.add('lightbox-panning');
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (!lightboxPanning) return;
+    const dx = e.clientX - lightboxPanStart.x;
+    const dy = e.clientY - lightboxPanStart.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) lightboxPanMoved = true;
+    stage.scrollLeft = lightboxPanStart.sl - dx;
+    stage.scrollTop = lightboxPanStart.st - dy;
+  });
+  stage.addEventListener('pointerup', function (e) {
+    if (!lightboxPanning) return;
+    lightboxPanning = false;
+    stage.classList.remove('lightbox-panning');
+    try { stage.releasePointerCapture(e.pointerId); } catch (err) {}
+  });
+  stage.addEventListener('pointercancel', function () {
+    lightboxPanning = false;
+    stage.classList.remove('lightbox-panning');
+  });
+  stage.addEventListener('dblclick', function () {
+    if (lb.hidden) return;
+    fitLightboxToScreen();
+  });
   stage.addEventListener('click', function (e) {
-    if (e.target === stage) closeChartLightbox();
+    if (e.target === stage && !lightboxPanMoved) closeChartLightbox();
   });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !lb.hidden) closeChartLightbox();
