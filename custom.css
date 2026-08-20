@@ -371,3 +371,142 @@ body.light-mode .markdown-body {
 }
 body.outline-open #content { padding-right: 30px; }
 body.outline-open .search-panel.outer-panel-shifted { right: 220px; }
+
+/* ============ Mermaid 图表 ============ */
+.markdown-body .mermaid-block {
+  position: relative;
+  margin: 16px 0;
+  padding: 12px;
+  white-space: normal;
+  font-family: inherit;
+  background-color: var(--color-canvas-subtle, #f6f8fa);
+  border: 1px solid var(--color-border-muted, #d0d7de);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.markdown-body .mermaid-block:hover {
+  border-color: var(--color-accent-fg, #0969da);
+}
+.markdown-body .mermaid-svg {
+  display: flex;
+  justify-content: center;
+  min-height: 40px;
+}
+.markdown-body .mermaid-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-body .mermaid-svg.mermaid-rendered svg {
+  cursor: zoom-in;
+}
+.markdown-body .mermaid-placeholder {
+  color: var(--color-fg-muted, #656d76);
+  font-size: 13px;
+  padding: 16px;
+}
+.mermaid-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  gap: 4px;
+  z-index: 5;
+}
+.mermaid-block:hover .mermaid-toolbar { display: flex; }
+.mermaid-tool-btn {
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--color-border-default, #d0d7de);
+  border-radius: 4px;
+  background-color: var(--color-canvas-default, #fff);
+  color: var(--color-fg-default, #1F2328);
+  cursor: pointer;
+  user-select: none;
+}
+.mermaid-tool-btn:hover {
+  border-color: var(--color-accent-emphasis, #0969da);
+  color: var(--color-accent-fg, #0969da);
+}
+.mermaid-error-box { width: 100%; text-align: left; }
+.mermaid-error-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--color-danger-fg, #d1242f);
+  margin-bottom: 6px;
+}
+.mermaid-error-msg {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-danger-fg, #d1242f);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+.mermaid-error-source {
+  background-color: var(--color-canvas-default, #fff);
+  border: 1px solid var(--color-border-muted, #d0d7de);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+/* ============ 图表缩放查看灯箱 ============ */
+.chart-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  background-color: rgba(1, 4, 9, 0.6);
+}
+.chart-lightbox[hidden] { display: none; }
+.chart-lightbox-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--color-canvas-default, #fff);
+  border-bottom: 1px solid var(--color-border-muted, #d0d7de);
+}
+.chart-lightbox-title {
+  margin-right: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fg-default, #1F2328);
+}
+.chart-lightbox-actions { display: flex; align-items: center; gap: 6px; }
+.chart-zoom-level {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-fg-muted, #656d76);
+}
+.chart-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border-default, #d0d7de);
+  border-radius: 4px;
+  background-color: var(--color-canvas-subtle, #f6f8fa);
+  color: var(--color-fg-default, #1F2328);
+  cursor: pointer;
+  user-select: none;
+}
+.chart-btn:hover {
+  border-color: var(--color-accent-emphasis, #0969da);
+  color: var(--color-accent-fg, #0969da);
+}
+.chart-btn-close { font-size: 14px; padding: 3px 8px; }
+.chart-lightbox-stage {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  cursor: grab;
+}
+.chart-lightbox-stage svg {
+  display: block;
+  background-color: var(--color-canvas-default, #fff);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  transform-origin: top left;
+}
+body.chart-lightbox-open { overflow: hidden; }

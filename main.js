@@ -202,6 +202,26 @@ function resolveImageSrcs(html, filePath) {
   });
 }
 
+const RENDER_MERMAID_SCRIPT = `(async () => {
+  if (typeof mermaid === 'undefined') return true;
+  const blocks = Array.from(document.querySelectorAll('#print-content .mermaid-block'));
+  if (!blocks.length) return true;
+  mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
+  for (const block of blocks) {
+    const srcEl = block.querySelector('.mermaid-source');
+    const host = block.querySelector('.mermaid-svg');
+    if (!srcEl || !host) continue;
+    try {
+      await mermaid.parse(srcEl.textContent);
+      const res = await mermaid.render('print-' + Date.now() + '-' + Math.floor(Math.random() * 1e6), srcEl.textContent);
+      host.innerHTML = res.svg;
+    } catch (e) {
+      host.innerHTML = '<p style="color:#d1242f;margin:0;font-size:13px;font-family:sans-serif">Mermaid 渲染失败</p>';
+    }
+  }
+  return true;
+})();`;
+
 const WAIT_IMAGES_SCRIPT = `new Promise((resolve) => {
   const imgs = Array.from(document.querySelectorAll('#print-content img'));
   if (imgs.length === 0) { resolve(true); return; }
@@ -233,6 +253,7 @@ ipcMain.handle('export-pdf', async (event, { html, filePath }) => {
     await hiddenWin.webContents.executeJavaScript(
       `document.getElementById('print-content').innerHTML = ${JSON.stringify(finalHtml)};`
     );
+    await hiddenWin.webContents.executeJavaScript(RENDER_MERMAID_SCRIPT);
     await hiddenWin.webContents.executeJavaScript(WAIT_IMAGES_SCRIPT);
 
     const data = await hiddenWin.webContents.printToPDF({
@@ -260,5 +281,32 @@ ipcMain.handle('export-pdf', async (event, { html, filePath }) => {
     return { ok: false, error: err.message || String(err) };
   } finally {
     if (!hiddenWin.isDestroyed()) hiddenWin.destroy();
+  }
+});
+
+ipcMain.handle('export-chart', async (event, { format, data, defaultName }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const isPng = format === 'png';
+  const saveResult = await dialog.showSaveDialog(win, {
+    title: isPng ? '导出图表为 PNG' : '导出图表为 SVG',
+    defaultPath: defaultName || 'mermaid.' + (isPng ? 'png' : 'svg'),
+    filters: isPng
+      ? [{ name: 'PNG 图片', extensions: ['png'] }]
+      : [{ name: 'SVG 图片', extensions: ['svg'] }],
+  });
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { ok: false, canceled: true };
+  }
+  try {
+    if (isPng) {
+      const base64 = String(data || '').replace(/^data:image\/png;base64,/, '');
+      await fs.promises.writeFile(saveResult.filePath, Buffer.from(base64, 'base64'));
+    } else {
+      await fs.promises.writeFile(saveResult.filePath, String(data || ''), 'utf-8');
+    }
+    return { ok: true, filePath: saveResult.filePath };
+  } catch (err) {
+    console.error('导出图表失败:', err);
+    return { ok: false, error: err.message || String(err) };
   }
 });

@@ -10,6 +10,11 @@ let searchActiveIndex = -1;    // 结果列表中当前选中下标
 let searchRegex = null;        // 当前已编译的 RegExp
 let searchDebounceId = null;
 let sourceLineMap = [];        // 顶层 DOM 块索引 → 对应源码起始行号
+let mermaidSeq = 0;            // mermaid 渲染块自增 id
+let mermaidBlocks = [];        // [{ el, source, status }] 当前文档中的 mermaid 块
+let mermaidRenderToken = 0;    // 渲染令牌：打开新文件时作废旧渲染任务
+let lightboxBlock = null;      // 灯箱当前对应的 mermaid 块
+let lightboxScale = 1;         // 灯箱当前缩放倍率
 let outlineItems = [];         // [{ level, title, el }]
 let activeOutlineIndex = -1;   // 当前高亮条目下标
 let outlineCollapsed = false;  // 折叠状态（localStorage 持久化）
@@ -20,6 +25,12 @@ const md = window.markdownit({
   linkify: true,
   typographer: true,
   highlight: function (str, lang) {
+    if (lang && lang.toLowerCase() === 'mermaid') {
+      return '<pre class="mermaid-block" data-mermaid-id="mdm-' + (++mermaidSeq) + '">' +
+        '<div class="mermaid-svg mermaid-pending"><span class="mermaid-placeholder">渲染中…</span></div>' +
+        '<div class="mermaid-source" hidden>' + md.utils.escapeHtml(str) + '</div>' +
+        '</pre>';
+    }
     if (typeof hljs !== 'undefined') {
       if (lang && hljs.getLanguage(lang)) {
         try {
@@ -38,6 +49,7 @@ async function renderMarkdown(content, filePath) {
   rawMarkdown = content || '';
   clearSearchState();
   clearOutlineState();
+  closeChartLightbox();
   buildLineMap(rawMarkdown);
   let html = md.render(content || '');
   html = html.replace(/<li>\[ \]\s*/g, '<li><input type="checkbox" disabled>');
@@ -53,6 +65,7 @@ async function renderMarkdown(content, filePath) {
   } else {
     contentEl.innerHTML = html;
   }
+  collectMermaidBlocks();
   buildOutline();
   window.electronAPI.setExportEnabled(Boolean(content && content.trim()));
   if (filePath) {
@@ -126,6 +139,7 @@ window.electronAPI.onSetTheme((theme) => {
   document.body.classList.toggle('dark-mode', theme === 'dark');
   document.body.classList.toggle('light-mode', theme === 'light');
   setHighlightTheme(theme);
+  reRenderMermaidForTheme();
 });
 
 window.electronAPI.onExportPdfRequest(async () => {
@@ -546,3 +560,296 @@ function initOutlinePanel() {
   bindOutlineScrollListener();
 }
 initOutlinePanel();
+
+// ============ Mermaid 图表渲染（本地 lib/mermaid.min.js） ============
+
+function collectMermaidBlocks() {
+  mermaidBlocks = [];
+  mermaidRenderToken++;
+  const blocks = $('content').querySelectorAll('.mermaid-block');
+  if (!blocks.length) return;
+  if (typeof mermaid === 'undefined') {
+    Array.prototype.forEach.call(blocks, function (el) {
+      const srcEl = el.querySelector('.mermaid-source');
+      const src = srcEl ? srcEl.textContent : '';
+      el.querySelector('.mermaid-svg').innerHTML =
+        '<div class="mermaid-error-box">' +
+        '<div class="mermaid-error-title">Mermaid 渲染库未加载</div>' +
+        '<pre class="mermaid-error-source">' + escapeHtmlForSearch(src) + '</pre>' +
+        '</div>';
+    });
+    return;
+  }
+  Array.prototype.forEach.call(blocks, function (el) {
+    const srcEl = el.querySelector('.mermaid-source');
+    mermaidBlocks.push({
+      el: el,
+      source: srcEl ? srcEl.textContent : '',
+      status: 'pending'
+    });
+  });
+  scheduleMermaidRenders();
+}
+
+function scheduleMermaidRenders() {
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(function () { renderMermaidAll(); }, { timeout: 1500 });
+  } else {
+    renderMermaidAll();
+  }
+}
+
+async function renderMermaidAll() {
+  const token = mermaidRenderToken;
+  for (let i = 0; i < mermaidBlocks.length; i++) {
+    if (token !== mermaidRenderToken) return;
+    const b = mermaidBlocks[i];
+    if (b.status !== 'pending') continue;
+    await renderOneMermaid(b);
+    await new Promise(function (resolve) { setTimeout(resolve, 0); });
+  }
+}
+
+function getMermaidTheme() {
+  return document.body.classList.contains('dark-mode') ? 'dark' : 'default';
+}
+
+async function renderOneMermaid(b) {
+  if (b.status !== 'pending') return;
+  const svgHost = b.el.querySelector('.mermaid-svg');
+  if (!svgHost) return;
+  try {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: getMermaidTheme(),
+      securityLevel: 'strict',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
+    });
+    await mermaid.parse(b.source);
+    const result = await mermaid.render(b.el.getAttribute('data-mermaid-id'), b.source);
+    svgHost.innerHTML = result.svg;
+    svgHost.classList.remove('mermaid-pending');
+    svgHost.classList.add('mermaid-rendered');
+    b.status = 'rendered';
+    attachMermaidToolbar(b);
+  } catch (err) {
+    svgHost.classList.remove('mermaid-pending');
+    svgHost.classList.add('mermaid-error');
+    b.status = 'error';
+    const msg = (err && (err.str || err.message)) || String(err);
+    svgHost.innerHTML =
+      '<div class="mermaid-error-box">' +
+      '<div class="mermaid-error-title">Mermaid 渲染失败</div>' +
+      '<div class="mermaid-error-msg">' + escapeHtmlForSearch(msg) + '</div>' +
+      '<pre class="mermaid-error-source">' + escapeHtmlForSearch(b.source) + '</pre>' +
+      '</div>';
+  }
+}
+
+function attachMermaidToolbar(b) {
+  if (b.el.querySelector('.mermaid-toolbar')) return;
+  const toolbar = document.createElement('div');
+  toolbar.className = 'mermaid-toolbar';
+  toolbar.innerHTML =
+    '<button type="button" class="mermaid-tool-btn" data-action="zoom" title="点击放大查看">放大</button>' +
+    '<button type="button" class="mermaid-tool-btn" data-action="svg" title="导出为 SVG">SVG</button>' +
+    '<button type="button" class="mermaid-tool-btn" data-action="png" title="导出为 PNG">PNG</button>';
+  b.el.appendChild(toolbar);
+  toolbar.addEventListener('click', function (e) {
+    const btn = e.target.closest('.mermaid-tool-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const action = btn.getAttribute('data-action');
+    if (action === 'zoom') openChartLightbox(b);
+    else if (action === 'svg') exportChartFromBlock(b, 'svg');
+    else if (action === 'png') exportChartFromBlock(b, 'png');
+  });
+  const svgHost = b.el.querySelector('.mermaid-svg');
+  if (svgHost) {
+    svgHost.addEventListener('click', function () {
+      openChartLightbox(b);
+    });
+  }
+}
+
+async function reRenderMermaidForTheme() {
+  if (typeof mermaid === 'undefined') return;
+  const targets = mermaidBlocks.filter(function (b) { return b.status === 'rendered'; });
+  if (!targets.length) return;
+  targets.forEach(function (b) {
+    b.status = 'pending';
+    const svgHost = b.el.querySelector('.mermaid-svg');
+    if (svgHost) {
+      svgHost.innerHTML = '<span class="mermaid-placeholder">重新渲染…</span>';
+      svgHost.classList.remove('mermaid-rendered', 'mermaid-error');
+      svgHost.classList.add('mermaid-pending');
+    }
+    const toolbar = b.el.querySelector('.mermaid-toolbar');
+    if (toolbar) toolbar.remove();
+  });
+  for (let i = 0; i < targets.length; i++) {
+    await renderOneMermaid(targets[i]);
+  }
+  if (lightboxBlock && !$('chart-lightbox').hidden) {
+    openChartLightbox(lightboxBlock);
+  }
+}
+
+// ============ 图表缩放查看（灯箱） ============
+
+function openChartLightbox(b) {
+  const svgHost = b.el.querySelector('.mermaid-svg');
+  const svgEl = svgHost ? svgHost.querySelector('svg') : null;
+  if (!svgEl) return;
+  lightboxBlock = b;
+  lightboxScale = 1;
+  const stage = $('chart-lightbox-stage');
+  stage.innerHTML = '';
+  const clone = svgEl.cloneNode(true);
+  clone.removeAttribute('style');
+  stage.appendChild(clone);
+  stage.scrollTop = 0;
+  stage.scrollLeft = 0;
+  updateLightboxZoom();
+  $('chart-lightbox').hidden = false;
+  document.body.classList.add('chart-lightbox-open');
+}
+
+function updateLightboxZoom() {
+  const clone = $('chart-lightbox-stage').querySelector('svg');
+  if (!clone) return;
+  clone.style.transform = 'scale(' + lightboxScale + ')';
+  clone.style.transformOrigin = 'top left';
+  const level = $('chart-zoom-level');
+  if (level) level.textContent = Math.round(lightboxScale * 100) + '%';
+}
+
+function closeChartLightbox() {
+  $('chart-lightbox').hidden = true;
+  $('chart-lightbox-stage').innerHTML = '';
+  document.body.classList.remove('chart-lightbox-open');
+  lightboxBlock = null;
+  lightboxScale = 1;
+}
+
+// ============ 图表导出（SVG / PNG） ============
+
+function exportChartFromBlock(b, format) {
+  const svgHost = b.el.querySelector('.mermaid-svg');
+  const svgEl = svgHost ? svgHost.querySelector('svg') : null;
+  if (!svgEl) return;
+  const baseName = (b.el.getAttribute('data-mermaid-id') || 'mermaid');
+  exportSvgElement(svgEl, format, baseName);
+}
+
+async function exportSvgElement(svgEl, format, baseName) {
+  try {
+    let data;
+    let defaultName;
+    if (format === 'svg') {
+      data = serializeSvg(svgEl);
+      defaultName = baseName + '.svg';
+    } else {
+      data = await svgToPngDataUrl(svgEl, 2);
+      defaultName = baseName + '.png';
+    }
+    const res = await window.electronAPI.exportChart({ format: format, data: data, defaultName: defaultName });
+    if (!res || res.canceled) return;
+    if (res.ok) {
+      alert('导出成功：' + res.filePath);
+    } else {
+      alert('导出失败：' + (res.error || '未知错误'));
+    }
+  } catch (err) {
+    alert('导出失败：' + (err.message || String(err)));
+  }
+}
+
+function serializeSvg(svgEl) {
+  const clone = svgEl.cloneNode(true);
+  clone.removeAttribute('style');
+  const xml = new XMLSerializer().serializeToString(clone);
+  if (/^<svg[^>]*xmlns=/.test(xml)) return xml;
+  return xml.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+}
+
+function svgToPngDataUrl(svgEl, scale) {
+  return new Promise(function (resolve, reject) {
+    const clone = svgEl.cloneNode(true);
+    clone.removeAttribute('style');
+    let width = parseInt(clone.getAttribute('width'), 10) || 0;
+    let height = parseInt(clone.getAttribute('height'), 10) || 0;
+    if (!width || !height) {
+      const vb = clone.getAttribute('viewBox');
+      if (vb) {
+        const parts = vb.split(/[\s,]+/).map(Number);
+        if (parts.length >= 4) { width = parts[2]; height = parts[3]; }
+      }
+    }
+    if (!width || !height) {
+      reject(new Error('无法确定图表尺寸'));
+      return;
+    }
+    const xml = new XMLSerializer().serializeToString(clone);
+    const img = new Image();
+    img.onload = function () {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(width * scale);
+        canvas.height = Math.round(height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = document.body.classList.contains('dark-mode') ? '#0d1117' : '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/png'));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    img.onerror = function () {
+      reject(new Error('SVG 转 PNG 失败'));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+  });
+}
+
+function initMermaidModule() {
+  const lb = $('chart-lightbox');
+  const stage = $('chart-lightbox-stage');
+  if (!lb || !stage) return;
+
+  $('chart-lightbox-close').addEventListener('click', closeChartLightbox);
+  $('chart-zoom-in').addEventListener('click', function () {
+    lightboxScale = Math.min(5, lightboxScale + 0.1);
+    updateLightboxZoom();
+  });
+  $('chart-zoom-out').addEventListener('click', function () {
+    lightboxScale = Math.max(0.2, lightboxScale - 0.1);
+    updateLightboxZoom();
+  });
+  $('chart-zoom-reset').addEventListener('click', function () {
+    lightboxScale = 1;
+    updateLightboxZoom();
+  });
+  $('chart-export-svg').addEventListener('click', function () {
+    if (lightboxBlock) exportChartFromBlock(lightboxBlock, 'svg');
+  });
+  $('chart-export-png').addEventListener('click', function () {
+    if (lightboxBlock) exportChartFromBlock(lightboxBlock, 'png');
+  });
+  stage.addEventListener('wheel', function (e) {
+    if (lb.hidden) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.1 : -0.1;
+    lightboxScale = Math.min(5, Math.max(0.2, lightboxScale + delta));
+    updateLightboxZoom();
+  }, { passive: false });
+  stage.addEventListener('click', function (e) {
+    if (e.target === stage) closeChartLightbox();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !lb.hidden) closeChartLightbox();
+  });
+}
+initMermaidModule();

@@ -38,8 +38,25 @@
     <div id="search-hint" class="search-hint"></div>
   </div>
 
+  <div id="chart-lightbox" class="chart-lightbox" hidden>
+    <div class="chart-lightbox-toolbar">
+      <span class="chart-lightbox-title">Mermaid 图表</span>
+      <div class="chart-lightbox-actions">
+        <button id="chart-zoom-out" class="chart-btn" type="button" title="缩小">−</button>
+        <span id="chart-zoom-level" class="chart-zoom-level">100%</span>
+        <button id="chart-zoom-in" class="chart-btn" type="button" title="放大">＋</button>
+        <button id="chart-zoom-reset" class="chart-btn" type="button" title="重置缩放">重置</button>
+        <button id="chart-export-svg" class="chart-btn" type="button" title="导出为 SVG">导出 SVG</button>
+        <button id="chart-export-png" class="chart-btn" type="button" title="导出为 PNG">导出 PNG</button>
+        <button id="chart-lightbox-close" class="chart-btn chart-btn-close" type="button" title="关闭" aria-label="关闭">×</button>
+      </div>
+    </div>
+    <div id="chart-lightbox-stage" class="chart-lightbox-stage"></div>
+  </div>
+
   <script src="lib/markdown-it.min.js"></script>
   <script src="lib/highlight.min.js"></script>
+  <script src="lib/mermaid.min.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

@@ -7,5 +7,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportPdf: (html, filePath) => ipcRenderer.invoke('export-pdf', { html, filePath }),
   onExportPdfRequest: (callback) => ipcRenderer.on('export-pdf-request', () => callback()),
   setExportEnabled: (enabled) => ipcRenderer.send('set-export-enabled', enabled),
+  exportChart: (payload) => ipcRenderer.invoke('export-chart', payload),
   resolveImageSrcs: (html, filePath) => ipcRenderer.invoke('resolve-image-srcs', { html, filePath }),
 });
