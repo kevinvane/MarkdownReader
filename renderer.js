@@ -25,6 +25,23 @@ let outlineItems = [];         // [{ level, title, el }]
 let activeOutlineIndex = -1;   // 当前高亮条目下标
 let outlineCollapsed = false;  // 折叠状态（localStorage 持久化）
 const OUTLINE_STORAGE_KEY = 'md-reader.outline.collapsed';
+const CODE_COLLAPSE_THRESHOLD = 30;  // 代码块超过 30 行默认折叠
+const CODE_LANG_NAMES = {
+  js: 'JavaScript', javascript: 'JavaScript',
+  ts: 'TypeScript', typescript: 'TypeScript',
+  py: 'Python', python: 'Python',
+  rb: 'Ruby', ruby: 'Ruby',
+  go: 'Go', rust: 'Rust',
+  c: 'C', cpp: 'C++', 'c++': 'C++',
+  cs: 'C#', 'c#': 'C#',
+  java: 'Java', kotlin: 'Kotlin', swift: 'Swift', dart: 'Dart',
+  php: 'PHP', sql: 'SQL',
+  html: 'HTML', css: 'CSS', scss: 'SCSS', sass: 'Sass',
+  json: 'JSON', xml: 'XML', yaml: 'YAML', yml: 'YAML', toml: 'TOML', ini: 'INI',
+  bash: 'Bash', sh: 'Shell', shell: 'Shell', zsh: 'Zsh', powershell: 'PowerShell',
+  md: 'Markdown', markdown: 'Markdown',
+  dockerfile: 'Dockerfile', diff: 'Diff', makefile: 'Makefile', http: 'HTTP', graphql: 'GraphQL'
+};
 
 const md = window.markdownit({
   html: false,
@@ -37,19 +54,28 @@ const md = window.markdownit({
         '<div class="mermaid-source" hidden>' + md.utils.escapeHtml(str) + '</div>' +
         '</pre>';
     }
+    const langAttr = lang ? ' data-lang="' + md.utils.escapeHtml(lang) + '"' : '';
+    const linesAttr = ' data-lines="' + countCodeLines(str) + '"';
     if (typeof hljs !== 'undefined') {
       if (lang && hljs.getLanguage(lang)) {
         try {
-          return '<pre class="hljs"><code>' + hljs.highlight(str, { language: lang }).value + '</code></pre>';
+          return '<pre class="hljs"' + linesAttr + langAttr + '><code>' +
+            hljs.highlight(str, { language: lang }).value + '</code></pre>';
         } catch (e) {}
       }
       try {
-        return '<pre class="hljs"><code>' + hljs.highlightAuto(str).value + '</code></pre>';
+        return '<pre class="hljs"' + linesAttr + langAttr + '><code>' +
+          hljs.highlightAuto(str).value + '</code></pre>';
       } catch (e) {}
     }
-    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
+    return '<pre class="hljs"' + linesAttr + langAttr + '><code>' +
+      md.utils.escapeHtml(str) + '</code></pre>';
   }
 });
+
+function countCodeLines(str) {
+  return str ? str.split('\n').length : 1;
+}
 
 async function renderMarkdown(content, filePath) {
   rawMarkdown = content || '';
@@ -71,6 +97,7 @@ async function renderMarkdown(content, filePath) {
   } else {
     contentEl.innerHTML = html;
   }
+  enhanceCodeBlocks();
   collectMermaidBlocks();
   buildOutline();
   window.electronAPI.setExportEnabled(Boolean(content && content.trim()));
@@ -1024,3 +1051,93 @@ function initMermaidModule() {
   });
 }
 initMermaidModule();
+
+// ============ 代码块增强（语言标签 / 行号 / 复制 / 折叠） ============
+
+function codeLangLabel(lang) {
+  if (!lang) return '';
+  return CODE_LANG_NAMES[lang.toLowerCase()] || lang;
+}
+
+function buildCodeGutter(lineCount) {
+  const nums = [];
+  for (let i = 1; i <= lineCount; i++) nums.push(String(i));
+  return nums.join('\n');
+}
+
+function codeTextFromPre(pre) {
+  const codeEl = pre.querySelector('code');
+  return codeEl ? codeEl.textContent : '';
+}
+
+function enhanceCodeBlock(pre) {
+  if (pre.getAttribute('data-enhanced') === '1') return;
+  pre.setAttribute('data-enhanced', '1');
+
+  const lineCount = parseInt(pre.getAttribute('data-lines') || '1', 10) || 1;
+  const lang = pre.getAttribute('data-lang') || '';
+  const collapsible = lineCount > CODE_COLLAPSE_THRESHOLD;
+
+  const shell = document.createElement('div');
+  shell.className = 'code-shell' + (collapsible ? ' code-collapsed' : '');
+  pre.parentNode.insertBefore(shell, pre);
+
+  const header = document.createElement('div');
+  header.className = 'code-header';
+  const langSpan = document.createElement('span');
+  langSpan.className = 'code-lang' + (lang ? '' : ' code-lang-empty');
+  langSpan.textContent = codeLangLabel(lang);
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'code-copy-btn';
+  copyBtn.textContent = '复制';
+  copyBtn.title = '复制代码';
+  copyBtn.addEventListener('click', function () {
+    copyTextToClipboard(codeTextFromPre(pre)).then(function (ok) {
+      const old = copyBtn.textContent;
+      copyBtn.textContent = ok ? '已复制' : '复制失败';
+      copyBtn.classList.add(ok ? 'code-copied' : 'code-copy-failed');
+      setTimeout(function () {
+        copyBtn.textContent = old;
+        copyBtn.classList.remove('code-copied', 'code-copy-failed');
+      }, 1200);
+    });
+  });
+  header.appendChild(langSpan);
+  header.appendChild(copyBtn);
+
+  const scrollWrap = document.createElement('div');
+  scrollWrap.className = 'code-scroll';
+  const gutter = document.createElement('div');
+  gutter.className = 'code-gutter';
+  gutter.setAttribute('aria-hidden', 'true');
+  gutter.textContent = buildCodeGutter(lineCount);
+  scrollWrap.appendChild(gutter);
+  scrollWrap.appendChild(pre);
+  pre.classList.add('code-enhanced');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'code-overlay';
+  overlay.hidden = !collapsible;
+  const expandBtn = document.createElement('button');
+  expandBtn.type = 'button';
+  expandBtn.className = 'code-expand-btn';
+  expandBtn.textContent = '展开全部 ' + lineCount + ' 行';
+  expandBtn.addEventListener('click', function () {
+    shell.classList.remove('code-collapsed');
+    overlay.hidden = true;
+  });
+  overlay.appendChild(expandBtn);
+
+  shell.appendChild(header);
+  shell.appendChild(scrollWrap);
+  shell.appendChild(overlay);
+}
+
+function enhanceCodeBlocks() {
+  const preList = $('content').querySelectorAll('pre.hljs');
+  Array.prototype.forEach.call(preList, function (pre) {
+    if (pre.classList.contains('mermaid-block')) return;
+    enhanceCodeBlock(pre);
+  });
+}
